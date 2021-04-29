@@ -1,5 +1,8 @@
+/* volume.c */
+
 #include <pulse/pulseaudio.h>
 
+//#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -18,22 +21,29 @@ void cleanup(pa_mainloop *m, ...)
 /* catch and handle SIGINT */
 void sigint_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata)
 {
-    fprintf(stderr, "caught SIGINT...\n");
     exit(EXIT_SUCCESS);
 }
 
 /* executes on sink events in our subscription */
 void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
 {
-    fprintf(stderr, "detected sink event\n");
+    if (i)
+    {
+        /* TODO: print "MUTE" instead of volume if i->mute == 1 */
+
+        pa_volume_t avgvol = pa_cvolume_avg(&i->volume);
+        char avgvol_pct[PA_VOLUME_SNPRINT_MAX];
+        pa_volume_snprint(avgvol_pct, PA_VOLUME_SNPRINT_MAX, avgvol);
+        fprintf(stdout, "%s\n", avgvol_pct);
+        fflush(stdout);
+
+    }
 
 }
 
 /* executes on our context subscription events */
 void ctx_subscribe_cb(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata)
 {
-    fprintf(stderr, "detected subscription changes\n");
-
     switch (t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK)
     {
         case PA_SUBSCRIPTION_EVENT_SINK:
@@ -45,19 +55,32 @@ void ctx_subscribe_cb(pa_context *c, pa_subscription_event_type_t t, uint32_t id
     }
 }
 
+/* executes once context is ready */
+void ctx_ready_cb(pa_context *c, const pa_server_info *i, void *userdata)
+{
+    if (i)
+    {
+        pa_context_get_sink_info_by_name(c, i->default_sink_name, sink_info_cb, userdata);
+    }
+}
+
 /* executes on changes to context state */
 void ctx_state_cb(pa_context *c, void *userdata)
 {
-    fprintf(stderr, "detected change in context state\n");
+    pa_operation *op;
 
     pa_context_state_t state = pa_context_get_state(c);
     switch (state)
     {
         case PA_CONTEXT_READY:
-            fprintf(stderr, "context state is ready\n");
+            op = pa_context_get_server_info(c, ctx_ready_cb, userdata);
+			if (op)
+            {
+                pa_operation_unref(op);
+            }
+            
             pa_context_set_subscribe_callback(c, ctx_subscribe_cb, userdata);
-            // TODO: 3rd arg below could be a success_cb instead of NULL
-            pa_operation *op = pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK , NULL, userdata);
+            op = pa_context_subscribe(c, PA_SUBSCRIPTION_MASK_SINK, NULL, userdata);
 			if (op)
             {
                 pa_operation_unref(op);
@@ -130,19 +153,17 @@ int main(int argc, char* argv[])
     pa_context_set_state_callback(ctx, ctx_state_cb, mainloop);
 
     /* run mainloop and save its status on quit() */
-    int retval;
+    int retval = EXIT_SUCCESS;
     if (pa_mainloop_run(mainloop, &retval) < 0)
     {
         fprintf(stderr, "pa_mainloop_run() failed\n");
-        //return EXIT_FAILURE;
+        return retval;
     }
-
-    fprintf(stderr, "retval = %d\n", retval);
 
     pa_context_unref(ctx);
     pa_signal_free(sigevt);
     pa_signal_done();
     pa_mainloop_free(mainloop);
 
-    return EXIT_SUCCESS;
+    return retval;
 }
