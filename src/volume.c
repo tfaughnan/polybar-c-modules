@@ -22,10 +22,27 @@ void sigint_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata
     exit(EXIT_SUCCESS);
 }
 
+/* executes on sink events in our subscription */
+void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
+{
+    fprintf(stderr, "detected sink event\n");
+
+}
+
 /* executes on our context subscription events */
 void ctx_subscribe_cb(pa_context *c, pa_subscription_event_type_t t, uint32_t idx, void *userdata)
 {
     fprintf(stderr, "detected subscription changes\n");
+
+    switch (t & PA_SUBSCRIPTION_EVENT_FACILITY_MASK)
+    {
+        case PA_SUBSCRIPTION_EVENT_SINK:
+            pa_context_get_sink_info_by_index(c, idx, sink_info_cb, userdata);
+            break;
+        default:
+            fprintf(stderr, "unexpected event type\n");
+            break;
+    }
 }
 
 /* executes on changes to context state */
