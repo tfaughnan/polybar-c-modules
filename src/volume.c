@@ -2,7 +2,6 @@
 
 #include <pulse/pulseaudio.h>
 
-//#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -24,19 +23,48 @@ void sigint_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata
     exit(EXIT_SUCCESS);
 }
 
+/* toggle mute on default sink (ultimately called when SIGUSR1 received) */
+void sink_toggle_mute_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
+{
+    if (i)
+    {
+        pa_context_set_sink_mute_by_name(c, i->name, !i->mute, NULL, userdata);
+    }
+}
+
+/* intermediary function that calls sink_toggle_mute_cb */
+void handle_sink_toggle_mute_cb(pa_context *c, const pa_server_info *i, void *userdata)
+{
+    if (i)
+    {
+        pa_context_get_sink_info_by_name(c, i->default_sink_name, sink_toggle_mute_cb, userdata);
+    }
+}
+
+/* catch and handle SIGUSR1 (e.g., to be sent by polybar on click) */
+void sigusr1_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata)
+{
+    /* userdata should have been a pointer to the context */
+    pa_context_get_server_info(userdata, handle_sink_toggle_mute_cb, userdata);
+}
+
 /* executes on sink events in our subscription */
 void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
 {
     if (i)
     {
-        /* TODO: print "MUTE" instead of volume if i->mute == 1 */
-
-        pa_volume_t avgvol = pa_cvolume_avg(&i->volume);
-        char avgvol_pct[PA_VOLUME_SNPRINT_MAX];
-        pa_volume_snprint(avgvol_pct, PA_VOLUME_SNPRINT_MAX, avgvol);
-        fprintf(stdout, "%s\n", avgvol_pct);
+        if (i->mute)
+        {
+            fprintf(stdout, "MUTE\n");
+        }
+        else
+        {
+            pa_volume_t avgvol = pa_cvolume_avg(&i->volume);
+            char avgvol_pct[PA_VOLUME_SNPRINT_MAX];
+            pa_volume_snprint(avgvol_pct, PA_VOLUME_SNPRINT_MAX, avgvol);
+            fprintf(stdout, "%s\n", avgvol_pct);
+        }
         fflush(stdout);
-
     }
 
 }
@@ -118,10 +146,11 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
-    pa_signal_event *sigevt = pa_signal_new(SIGINT, sigint_cb, NULL);
-    if (!sigevt)
+    /* set callback function to execute on SIGINT */
+    pa_signal_event *sigint_evt = pa_signal_new(SIGINT, sigint_cb, NULL);
+    if (!sigint_evt)
     {
-        fprintf(stderr, "pa_signal_init() failed\n");
+        fprintf(stderr, "pa_signal_new() failed\n");
         pa_signal_done();
         pa_mainloop_free(mainloop);
         return EXIT_FAILURE;
@@ -132,7 +161,7 @@ int main(int argc, char* argv[])
     if (!ctx)
     {
         fprintf(stderr, "pa_context_new() failed\n");
-        pa_signal_free(sigevt);
+        pa_signal_free(sigint_evt);
         pa_signal_done();
         pa_mainloop_free(mainloop);
         return EXIT_FAILURE;
@@ -143,7 +172,7 @@ int main(int argc, char* argv[])
     {
         fprintf(stderr, "pa_context_connect() failed\n");
         pa_context_unref(ctx);
-        pa_signal_free(sigevt);
+        pa_signal_free(sigint_evt);
         pa_signal_done();
         pa_mainloop_free(mainloop);
         return EXIT_FAILURE;
@@ -152,16 +181,33 @@ int main(int argc, char* argv[])
     /* set callback function to execute on changes to context state */
     pa_context_set_state_callback(ctx, ctx_state_cb, mainloop);
 
+    /* set callback function to execute on SIGUSR1, declared later so context exists */
+    pa_signal_event *sigusr1_evt = pa_signal_new(SIGUSR1, sigusr1_cb, ctx);
+    if (!sigint_evt)
+    {
+        fprintf(stderr, "pa_signal_new() failed\n");
+        pa_signal_free(sigint_evt);
+        pa_signal_done();
+        pa_mainloop_free(mainloop);
+        return EXIT_FAILURE;
+    }
+
     /* run mainloop and save its status on quit() */
     int retval = EXIT_SUCCESS;
     if (pa_mainloop_run(mainloop, &retval) < 0)
     {
         fprintf(stderr, "pa_mainloop_run() failed\n");
+        pa_context_unref(ctx);
+        pa_signal_free(sigusr1_evt);
+        pa_signal_free(sigint_evt);
+        pa_signal_done();
+        pa_mainloop_free(mainloop);
         return retval;
     }
 
     pa_context_unref(ctx);
-    pa_signal_free(sigevt);
+    pa_signal_free(sigusr1_evt);
+    pa_signal_free(sigint_evt);
     pa_signal_done();
     pa_mainloop_free(mainloop);
 
