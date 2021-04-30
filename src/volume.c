@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+typedef pa_cvolume* (*fptr)(pa_cvolume*, pa_volume_t);
+int VOL_DELTA_PCT = 5;
+
 /* TODO: logging function using pa_context_errno() ? */
 
 /* TODO: variadic cleanup function might be nice */
@@ -17,13 +20,47 @@ void cleanup(pa_mainloop *m, ...)
 }
 */
 
+pa_volume_t pct_to_volume(int pct)
+{
+    assert(0 <= pct && pct <= 100);
+    return pct * (PA_VOLUME_NORM / 100);
+}
+
 /* catch and handle SIGINT */
 void sigint_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata)
 {
     exit(EXIT_SUCCESS);
 }
 
-/* toggle mute on default sink (ultimately called when SIGUSR1 received) */
+/* change volume on default sink (ultimately called when SIGUSR1 or SIGUSR2 received) */
+void sink_vol_change_cb(pa_context *c, const pa_sink_info *i, int eol, void *vol_change)
+{
+    if (i)
+    {
+        pa_volume_t vol_delta = pct_to_volume(VOL_DELTA_PCT);
+        pa_cvolume vol;
+        pa_cvolume_init(&vol);
+        pa_volume_t avgvol = pa_cvolume_avg(&i->volume);
+        pa_cvolume_set(&vol, i->channel_map.channels, avgvol);
+
+        /* cast vol_change back to a function pointer and call it */
+        fptr f = (fptr)vol_change;
+        f(&vol, vol_delta);
+
+        pa_context_set_sink_volume_by_name(c, i->name, &vol, NULL, NULL); 
+    }
+}
+
+/* intermediary function that calls sink_vol_change_cb */
+void handle_sink_vol_change_cb(pa_context *c, const pa_server_info *i, void *vol_change)
+{
+    if (i)
+    {
+        pa_context_get_sink_info_by_name(c, i->default_sink_name, sink_vol_change_cb, vol_change);
+    }
+}
+
+/* toggle mute on default sink (ultimately called when SIGWINCH received) */
 void sink_toggle_mute_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
 {
     if (i)
@@ -41,11 +78,28 @@ void handle_sink_toggle_mute_cb(pa_context *c, const pa_server_info *i, void *us
     }
 }
 
-/* catch and handle SIGUSR1 (e.g., to be sent by polybar on click) */
-void sigusr1_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *userdata)
+/* catch and handle SIGUSR1 (e.g., to be sent by polybar on scroll-up) */
+void sigusr1_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *c)
 {
-    /* userdata should have been a pointer to the context */
-    pa_context_get_server_info(userdata, handle_sink_toggle_mute_cb, userdata);
+    /* create void pointer to volume increase function */
+    void *vol_change = (void*)pa_cvolume_inc;
+
+    pa_context_get_server_info(c, handle_sink_vol_change_cb, vol_change);
+}
+
+/* catch and handle SIGUSR2 (e.g., to be sent by polybar on scroll-down) */
+void sigusr2_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *c)
+{
+    /* create void pointer to volume decrease function */
+    void *vol_change = (void*)pa_cvolume_dec;
+
+    pa_context_get_server_info(c, handle_sink_vol_change_cb, vol_change);
+}
+
+/* catch and handle SIGWINCH (e.g., to be sent by polybar on left-click) */
+void sigwinch_cb(pa_mainloop_api *api, pa_signal_event *e, int sig, void *c)
+{
+    pa_context_get_server_info(c, handle_sink_toggle_mute_cb, NULL);
 }
 
 /* executes on sink events in our subscription */
@@ -63,6 +117,7 @@ void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
             char avgvol_pct[PA_VOLUME_SNPRINT_MAX];
             pa_volume_snprint(avgvol_pct, PA_VOLUME_SNPRINT_MAX, avgvol);
             fprintf(stdout, "%s\n", avgvol_pct);
+            fprintf(stdout, "and %u\n", avgvol);
         }
         fflush(stdout);
     }
@@ -183,9 +238,34 @@ int main(int argc, char* argv[])
 
     /* set callback function to execute on SIGUSR1, declared later so context exists */
     pa_signal_event *sigusr1_evt = pa_signal_new(SIGUSR1, sigusr1_cb, ctx);
-    if (!sigint_evt)
+    if (!sigusr1_evt)
     {
         fprintf(stderr, "pa_signal_new() failed\n");
+        pa_signal_free(sigint_evt);
+        pa_signal_done();
+        pa_mainloop_free(mainloop);
+        return EXIT_FAILURE;
+    }
+
+    /* set callback function to execute on SIGUSR2, declared later so context exists */
+    pa_signal_event *sigusr2_evt = pa_signal_new(SIGUSR2, sigusr2_cb, ctx);
+    if (!sigusr2_evt)
+    {
+        fprintf(stderr, "pa_signal_new() failed\n");
+        pa_signal_free(sigusr1_evt);
+        pa_signal_free(sigint_evt);
+        pa_signal_done();
+        pa_mainloop_free(mainloop);
+        return EXIT_FAILURE;
+    }
+
+    /* set callback function to execute on SIGWINCH, declared later so context exists */
+    pa_signal_event *sigwinch_evt = pa_signal_new(SIGWINCH, sigwinch_cb, ctx);
+    if (!sigwinch_evt)
+    {
+        fprintf(stderr, "pa_signal_new() failed\n");
+        pa_signal_free(sigusr2_evt);
+        pa_signal_free(sigusr1_evt);
         pa_signal_free(sigint_evt);
         pa_signal_done();
         pa_mainloop_free(mainloop);
@@ -198,6 +278,8 @@ int main(int argc, char* argv[])
     {
         fprintf(stderr, "pa_mainloop_run() failed\n");
         pa_context_unref(ctx);
+        pa_signal_free(sigwinch_evt);
+        pa_signal_free(sigusr2_evt);
         pa_signal_free(sigusr1_evt);
         pa_signal_free(sigint_evt);
         pa_signal_done();
@@ -206,6 +288,8 @@ int main(int argc, char* argv[])
     }
 
     pa_context_unref(ctx);
+    pa_signal_free(sigwinch_evt);
+    pa_signal_free(sigusr2_evt);
     pa_signal_free(sigusr1_evt);
     pa_signal_free(sigint_evt);
     pa_signal_done();
