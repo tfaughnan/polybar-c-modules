@@ -117,7 +117,6 @@ void sink_info_cb(pa_context *c, const pa_sink_info *i, int eol, void *userdata)
             char avgvol_pct[PA_VOLUME_SNPRINT_MAX];
             pa_volume_snprint(avgvol_pct, PA_VOLUME_SNPRINT_MAX, avgvol);
             fprintf(stdout, "%s\n", avgvol_pct);
-            fprintf(stdout, "and %u\n", avgvol);
         }
         fflush(stdout);
     }
@@ -176,6 +175,11 @@ void ctx_state_cb(pa_context *c, void *userdata)
 
 int main(int argc, char* argv[])
 {
+    if (argc == 2)
+    {
+        VOL_DELTA_PCT = atoi(argv[1]);
+    }
+
     /* create mainloop */
     pa_mainloop *mainloop = pa_mainloop_new();
     if (!mainloop)
