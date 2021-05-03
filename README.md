@@ -4,7 +4,24 @@ A work-in-progress collection of basic modules for
 [Polybar](https://github.com/polybar/polybar),
 written in C.
 
+## Battery
+
+Battery percentage.
+Looks in `/sys/class/power_supply` for a BAT directory and reports the contents of its capacity file.
+It you have more than one battery, it is recommended to specify which one you want as an argument (e.g. BAT1),
+otherwise the first one found will be used.
+
+## example config
+
+```
+[module/battery]
+type = custom/script
+exec = /path/to/battery BAT1
+interval = 60
+```
+
 ## Time
+
 Configurable date and time status.
 Takes an optional format string argument (default is `"%Y-%m-%d %H:%M:%S"`).
 See [strftime(3)](https://man7.org/linux/man-pages/man3/strftime.3.html).

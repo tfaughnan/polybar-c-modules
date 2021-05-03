@@ -5,6 +5,9 @@ TARGETS = bin/time bin/volume
 
 all: $(TARGETS)
 
+bin/battery: obj/battery.o
+	$(CC) $(CFLAGS) -o $@ $<
+
 bin/time: obj/time.o
 	$(CC) $(CFLAGS) -o $@ $<
 
